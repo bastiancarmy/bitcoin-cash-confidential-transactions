@@ -1,0 +1,51 @@
+// Enhanced with BigInt ECC (unrolled for no loops)
+pragma cashscript ^0.9.0;
+
+// Secp constants (abridged)
+bigint P = 115792089237316195423570985008687907853269984665640564039457584007908834671663n; // secp256k1 p
+bigint Gx = 550662630222773436695787188951685343262506034537775941755199543666981639552n; // G.x
+bigint Gy = 32670510020758816978083085130507043184471273380659243275938904335757337482424n; // G.y
+
+// Helper: Modular inverse (extended Euclidean, BigInt impl from bch-bigint)
+function modInverse(bigint a, bigint m) { /* Impl: While loop unrolled or recursive */ }
+
+// Point type (x, y as BigInt)
+struct Point { bigint x; bigint y; }
+
+// Point add/double (Jacobian; ~10-20 opcodes each)
+function pointAdd(Point p1, Point p2) { /* BigInt math for add */ }
+function pointDouble(Point p) { /* BigInt math for double */ }
+
+// Scalar mul (binary ladder, unrolled 256 bits)
+function scalarMul(bigint scalar, Point base) {
+  Point result = {x: 0n, y: 0n}; // Infinity
+  Point temp = base;
+  // Unroll: for i in 0..255 { if (scalar >> i) & 1n { result = pointAdd(result, temp); } temp = pointDouble(temp); }
+  if ((scalar >> 0n) & 1n) result = pointAdd(result, temp); temp = pointDouble(temp);
+  // ... Repeat for 255 bits (verbose but feasible)
+  return result;
+}
+
+contract SigmaRangeCovenant(/* existing params */, bytes proofBytes) { // Add proofBytes input
+  function spend(/* existing args */) {
+    // Parse proofBytes to BigInts (commitments[], proofs[] with A0x/A0y, z0, etc.)
+    // ... Custom parsing logic (split bytes to BigInts)
+
+    // Verify aggregate C
+    Point computedC = {x: 0n, y: 0n};
+    for (int i = 0; i < 32; i++) { // Unroll: computedC = pointAdd(computedC, scalarMul(1n << i, commitments[i]));
+      // Manual unroll: if i==0 { computedC = commitments[0]; } else if i==1 { computedC = pointAdd(computedC, scalarMul(2n, commitments[1])); } ...
+    }
+    require(computedC.x == CPoint.x && computedC.y == CPoint.y); // From proof
+
+    // Unroll per-bit verifies (similar unrolling for 32 bits)
+    for (int i = 0; i < 32; i++) {
+      // Compute e = hash(A0 || A1 || C_i) % n (BigInt hash/mod)
+      // Check left0 = scalarMul(z0, G) == pointAdd(A0, scalarMul(e, C_i))
+      // And left1 = scalarMul(z1, G) == pointAdd(A1, scalarMul(e, pointSub(C_i, H)))
+      // Require one holds
+    }
+
+    // Existing requires...
+  }
+}

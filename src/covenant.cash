@@ -1,0 +1,24 @@
+// src/covenant.cash
+pragma cashscript ^0.11.3;
+
+// NOTE: Remove bytes32 proofHash from constructor.
+// Keep only Bob's paycode hash (hash160 of Bob's compressed pubkey).
+contract SigmaRangeCovenant(bytes20 bobPaycodeHash) {
+
+  // Match your JS push order: <amountCommitment> <pubkey> <sig>
+  // -> So list args reversed here: (sig, pubkey, int)
+  function spend(sig s, pubkey pk, int amountCommitment) {
+    // (A) Enforce the amount sent to output 0 matches unlocker-provided amount.
+    require(tx.outputs[0].value == amountCommitment);
+
+    // (B) Ensure output 0 pays to Bob (you already check this in JS by building P2PKH to Alice
+    //     and validating Bob within the covenant header; at minimum, bind pk to bobPaycodeHash):
+    require(hash160(pk) == bobPaycodeHash);
+
+    // (C) Usual signature check.
+    require(checkSig(s, pk));
+
+    // (D) Optional CashTokens invariants could be added here if desired, e.g.:
+    // require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "bch-pz-sqh-poc",
+  "version": "0.1.0",
+  "description": "Phase 1 PZ-SQH for ZK SDA with ZK Proofs on Bitcoin Cash",
+  "main": "dist/index.cjs",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/index.cjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "compile-covenant": "cashc src/covenant.cash -o artifact.json",
+    "demo": "node dist/demo.js",
+    "demo:conf": "node dist/demo.js --mode=conf-asset",
+    "demo:stealth": "node dist/demo.js --mode=stealth-p2pkh",
+    "demo:pq-vault": "node dist/demo.js --mode=pq-vault",
+    "test:core": "node dist/tests/core.test.js",
+    "test:confidential": "node dist/tests/confidential.test.js",
+    "test:modes": "node dist/tests/mode-switch.test.js",
+    "test:phase1": "npm run test:core && npm run test:confidential && npm run test:modes"
+  },
+  "dependencies": {
+    "@electrum-cash/network": "4.1.3",
+    "@noble/curves": "2.0.0",
+    "@noble/hashes": "2.0.0",
+    "aes-js": "3.1.2",
+    "bs58": "^6.0.0",
+    "bufferutil": "4.0.8",
+    "commander": "14.0.0",
+    "esbuild": "0.25.9",
+    "node-fetch": "3.3.2",
+    "paillier-bigint": "3.4.0",
+    "utf-8-validate": "6.0.5"
+  },
+  "devDependencies": {
+    "eslint": "8.6.0",
+    "eslint-plugin-babel": "5.3.1",
+    "prettier": "2.5.1"
+  },
+  "author": "Bastian Carmichael",
+  "license": "MIT"
+}

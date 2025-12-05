@@ -1,0 +1,38 @@
+// 2026-enhanced: Native loops/functions/bitwise
+pragma cashscript ^0.10.0; // Hypothetical post-2026
+
+// Function: Scalar mul with bitwise ladder
+function scalarMul(bigint scalar, Point base) -> Point {
+  Point result = INF;
+  Point temp = base;
+  for (int i = 0; i < 256; i++) { // Native loop
+    if ((scalar >> i) & 1n) { // Bitwise shift/AND
+      result = pointAdd(result, temp);
+    }
+    temp = pointDouble(temp);
+  }
+  return result;
+}
+
+contract SigmaRangeCovenant(/* params */) {
+  function spend(/* args */) {
+    // Parse proof...
+
+    // Aggregate with loop
+    Point computedC = INF;
+    for (int i = 0; i < 32; i++) {
+      computedC = pointAdd(computedC, scalarMul(1n << i, commitments[i])); // Bitwise shift
+    }
+    require(/* equals C */);
+
+    // Per-bit loop
+    for (int i = 0; i < 32; i++) {
+      // Compute e with bitwise hash mod
+      // Verify OR with function calls: require(scalarMul(z0, G) == ... || scalarMul(z1, G) == ...);
+    }
+
+    // P2S example: tx.outputs[0].script = computeShieldedScript(); // Dynamic private output
+
+    // Existing requires...
+  }
+}

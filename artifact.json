@@ -1,0 +1,54 @@
+{
+  "contractName": "SigmaRangeCovenant",
+  "constructorInputs": [
+    {
+      "name": "bobPaycodeHash",
+      "type": "bytes20"
+    }
+  ],
+  "abi": [
+    {
+      "name": "spend",
+      "inputs": [
+        {
+          "name": "s",
+          "type": "sig"
+        },
+        {
+          "name": "pk",
+          "type": "pubkey"
+        },
+        {
+          "name": "amountCommitment",
+          "type": "int"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_0 OP_OUTPUTVALUE OP_4 OP_ROLL OP_NUMEQUALVERIFY OP_2 OP_PICK OP_HASH160 OP_EQUALVERIFY OP_SWAP OP_CHECKSIG",
+  "source": "// src/covenant.cash\npragma cashscript ^0.11.3;\n\n// NOTE: Remove bytes32 proofHash from constructor.\n// Keep only Bob's paycode hash (hash160 of Bob's compressed pubkey).\ncontract SigmaRangeCovenant(bytes20 bobPaycodeHash) {\n\n  // Match your JS push order: <amountCommitment> <pubkey> <sig>\n  // -> So list args reversed here: (sig, pubkey, int)\n  function spend(sig s, pubkey pk, int amountCommitment) {\n    // (A) Enforce the amount sent to output 0 matches unlocker-provided amount.\n    require(tx.outputs[0].value == amountCommitment);\n\n    // (B) Ensure output 0 pays to Bob (you already check this in JS by building P2PKH to Alice\n    //     and validating Bob within the covenant header; at minimum, bind pk to bobPaycodeHash):\n    require(hash160(pk) == bobPaycodeHash);\n\n    // (C) Usual signature check.\n    require(checkSig(s, pk));\n\n    // (D) Optional CashTokens invariants could be added here if desired, e.g.:\n    // require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\n  }\n}\n",
+  "debug": {
+    "bytecode": "00cc547a9d5279a9887cac",
+    "sourceMap": "12:23:12:24;:12::31:1;:35::51:0;;:4::53:1;16:20:16:22:0;;:12::23:1;:4::43;19:24:19:26:0;:4::29:1",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 5,
+        "line": 12
+      },
+      {
+        "ip": 9,
+        "line": 16
+      },
+      {
+        "ip": 12,
+        "line": 19
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.11.5"
+  },
+  "updatedAt": "2025-11-11T19:21:16.594Z"
+}
