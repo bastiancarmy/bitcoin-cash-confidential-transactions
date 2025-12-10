@@ -57,9 +57,7 @@ import {
 } from './derivation.js';
 import { deriveEphemeralKeypair } from './ephemeral.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { generateSigmaRangeProof, serializeProof, computeProofHash } from './zk.js';
-import { getH, toCompressed } from './pedersen.js';
-import { buildProofEnvelope } from './transcript.js';
+import { buildAmountProofEnvelope } from './zk.js';
 import {
   makeRpaContextV1FromHex,
   attachRpaContextToPsbtOutput,
@@ -393,30 +391,14 @@ function computeFundingEnvelope(ephemPub33, amount) {
   const seed = sha256(concat(ephemPub33, uint64le(amount)));
 
   // PROOF: C_bytes is set by the generator and must exist before serialization.
-  const proof = generateSigmaRangeProof(amount, seed);
-  if (!proof.C_bytes || proof.C_bytes.length !== 33) {
-    throw new Error('proof.C_bytes missing or invalid before serialization');
-  }
-
-  const coreProofBytes = serializeProof(proof);
-  const H33 = toCompressed(getH());
-  const outIndex = 0;
-  const rangeBits = 64;
-  const assetId32 = null;
-  const extraCtx = new Uint8Array(0);
-
-  const envelope = buildProofEnvelope({
-    protocolTag: 'BCH-CT/Sigma64-v1',
-    rangeBits,
-    ephemPub33,
-    H33,
-    assetId32,
-    outIndex,
+  const { envelope, proofHash, commitmentC33 } = buildAmountProofEnvelope({
+    value: amountSats,
+    zkSeed: session.zkSeed,
+    ephemPub33: ephemPub,
+    assetId32: tokenCategory32, // Uint8Array(32) or null
+    outIndex: 1,
     extraCtx,
-    coreProofBytes,
   });
-
-  const proofHashBytes = computeProofHash(envelope);
   const coreHashBytes = computeProofHash(coreProofBytes); // convenient for debugging
 
   console.log('--- Funding Envelope Params ---');
