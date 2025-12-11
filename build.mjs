@@ -6,6 +6,7 @@ esbuild
     entryPoints: [
       'src/demo.js',
       'src/fund_schnorr.js',
+      'src/index_pool_demo.js',
       'src/tests/core.test.js',
       'src/tests/confidential.test.js',
       'src/tests/mode-switch.test.js',
@@ -24,7 +25,16 @@ esbuild
     keepNames: true,
     sourcemap: true,
     logLevel: 'warning',
-    external: ['paillier-bigint', 'bigint-crypto-utils', 'tty', 'os'],
-    loader: { '.cash': 'text' },
+    external: [
+      'paillier-bigint',
+      'bigint-crypto-utils',
+      'tty',
+      'os',
+      '@bitauth/libauth',
+    ],
+    loader: {
+      '.cash': 'text',
+      '.casm': 'text',
+    },
   })
   .catch(() => process.exit(1));

@@ -57,7 +57,13 @@ import {
 } from './derivation.js';
 import { deriveEphemeralKeypair } from './ephemeral.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { buildAmountProofEnvelope } from './zk.js';
+import {
+  buildAmountProofEnvelope,
+  generateSigmaRangeProof,
+  serializeProof,
+  computeProofHash,
+  BITS,
+} from './zk.js';
 import {
   makeRpaContextV1FromHex,
   attachRpaContextToPsbtOutput,
@@ -66,6 +72,8 @@ import {
   RpaModeId,
 } from './psbt_rpa.js';
 import { promptFundAddress } from './prompts.js';
+import { demoPoolHashFold } from './pool_hash_fold_demo.js';
+import { POOL_HASH_FOLD_VERSION } from './pool_hash_fold_script.js';
 
 function logSection(title) {
   console.log('\n' + '═'.repeat(70));
@@ -380,33 +388,51 @@ async function getCovenantUtxoFromTxId(txId, network) {
 /* Envelope computation (funding proof)                                      */
 /* -------------------------------------------------------------------------- */
 
-function computeFundingEnvelope(ephemPub33, amount) {
+function computeFundingEnvelope(
+  ephemPub33,
+  amount,
+  tokenCategory32 = null,
+  outIndex = 1,
+  extraCtx = new Uint8Array(0),
+) {
   if (!(ephemPub33 instanceof Uint8Array) || ephemPub33.length !== 33) {
     throw new Error('ephemPub33 must be a 33-byte compressed pubkey');
   }
-  if (typeof amount !== 'number' || amount < 0) {
-    throw new Error('amount must be a non-negative number');
+  if (typeof amount !== 'number' && typeof amount !== 'bigint') {
+    throw new Error('amount must be a non-negative number or bigint');
+  }
+  const amountBig = BigInt(amount);
+  if (amountBig < 0n) {
+    throw new Error('amount must be non-negative');
   }
 
-  const seed = sha256(concat(ephemPub33, uint64le(amount)));
+  // Phase-1 CTv1 spec: seed = sha256(ephemPub33 || uint64le(amount))
+  const seed = sha256(concat(ephemPub33, uint64le(amountBig)));
 
-  // PROOF: C_bytes is set by the generator and must exist before serialization.
-  const { envelope, proofHash, commitmentC33 } = buildAmountProofEnvelope({
-    value: amountSats,
-    zkSeed: session.zkSeed,
-    ephemPub33: ephemPub,
-    assetId32: tokenCategory32, // Uint8Array(32) or null
-    outIndex: 1,
+  const {
+    envelope,
+    proofHash,
+    coreHashBytes,
+    commitmentC33,
+  } = buildAmountProofEnvelope({
+    value: amountBig,
+    zkSeed: seed,
+    ephemPub33,
+    assetId32: tokenCategory32,
+    outIndex,
     extraCtx,
   });
-  const coreHashBytes = computeProofHash(coreProofBytes); // convenient for debugging
+
+  const proofHashBytes = proofHash;
 
   console.log('--- Funding Envelope Params ---');
   console.log('ephemPub33:', bytesToHex(ephemPub33));
-  console.log('rangeBits:', rangeBits);
+  console.log('rangeBits:', BITS);
   console.log('outIndex:', outIndex);
-  console.log('H33:', bytesToHex(H33));
-  console.log('assetId32:', assetId32);
+  console.log(
+    'assetId32:',
+    tokenCategory32 ? bytesToHex(tokenCategory32) : 'null',
+  );
   console.log('extraCtx.len:', extraCtx.length);
   console.log('coreHash (hash256(coreProofBytes)):', bytesToHex(coreHashBytes));
   console.log('proofHash (hash256(envelope)):', bytesToHex(proofHashBytes));
@@ -415,7 +441,7 @@ function computeFundingEnvelope(ephemPub33, amount) {
     envelope,
     proofHashBytes,
     coreHashBytes,
-    commitment33: proof.C_bytes, // used for token commitment
+    commitment33: commitmentC33, // used for NFT commitment
   };
 }
 
@@ -705,7 +731,12 @@ export async function demoSilentTransfer(options = {}) {
     proofHashBytes,
     coreHashBytes,
     commitment33,
-  } = computeFundingEnvelope(aliceEphemPubBytes, sendAmount);
+  } = computeFundingEnvelope(
+    aliceEphemPubBytes,
+    sendAmount,
+    categoryBytes, // tokenCategory32 / assetId32
+    1,             // outIndex for the covenant output
+  );  
 
   // Create CashToken with commitment from same proof
   const token = createToken(categoryBytes, commitment33);
@@ -1069,6 +1100,18 @@ async function mainCli(argv) {
     console.log('Running fund_schnorr.js (legacy fund helper)...');
     // eslint-disable-next-line global-require
     require('./fund_schnorr.js');
+    return;
+  }
+
+  // New: pool_hash_fold demo shortcut
+  if (argv[2] === 'pool') {
+    const versionArg = argv[3] || 'v0';
+    const version =
+      versionArg === 'v1' ? POOL_HASH_FOLD_VERSION.V1 : POOL_HASH_FOLD_VERSION.V0;
+
+    const { alice } = await getWallets();
+    const res = await demoPoolHashFold(alice, NETWORK, { version });
+    console.log('\nPool hash fold summary:', res);
     return;
   }
 
