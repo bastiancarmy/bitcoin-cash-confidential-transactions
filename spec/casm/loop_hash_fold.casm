@@ -1,0 +1,39 @@
+// FhashChunk: acc' = HASH256(acc || limb)
+<
+  OP_CAT
+  OP_HASH256
+>
+<0x02>
+OP_DEFINE
+
+// Unlocking must push: <limb0> <limb1> ... <limbN-1>
+
+// Seed accumulator with 32 bytes of zero.
+<0x0000000000000000000000000000000000000000000000000000000000000000>
+OP_TOALTSTACK        // alt: [acc0], main: limb0 ... limbN-1
+
+OP_BEGIN
+  OP_DEPTH
+  <0>
+  OP_NUMEQUAL        // cond = (depth == 0)
+  OP_DUP
+  OP_IF
+    // cond == 1 → exit
+  OP_ELSE
+    OP_DROP          // drop cond = 0
+
+    // alt: [acc], main: ... limb_{k-1}
+    OP_FROMALTSTACK  // main: ... limb acc
+    OP_SWAP          // main: ... acc limb
+
+    <0x02>
+    OP_INVOKE        // main: ... acc' = H(acc || limb)
+
+    OP_TOALTSTACK    // alt: [acc'], main: ... remaining limbs
+
+    <0>              // cond = 0 → keep looping
+  OP_ENDIF
+OP_UNTIL
+
+OP_FROMALTSTACK      // main: finalAcc
+OP_1

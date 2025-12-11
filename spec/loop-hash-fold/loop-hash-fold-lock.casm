@@ -1,0 +1,92 @@
+// ------------------------------------------
+// 1. Define FhashChunk as function id 0x02
+//
+//   Pre:  ... acc limb
+//   Post: ... acc' = HASH256(acc || limb)
+// ------------------------------------------
+
+<
+  OP_CAT
+  OP_HASH256
+>
+<0x02>
+OP_DEFINE
+
+// ------------------------------------------
+// 2. pool_hash_fold main body
+//
+// Unlocking script must push (in this order):
+//   <limb0> <limb1> ... <limbN-1> <oldCommit> <expectedNewCommit>
+//
+// At entry:
+//
+//   main:  limb0 limb1 ... limbN-1 oldCommit expectedNewCommit
+//   alt:   (empty)
+// ------------------------------------------
+
+// Move expectedNewCommit and oldCommit to altstack.
+//
+// After:
+//
+//   alt:  [expectedNewCommit, oldCommit]   // top is oldCommit = acc0
+//   main: limb0 limb1 ... limbN-1
+OP_TOALTSTACK        // alt: [expectedNewCommit]
+OP_TOALTSTACK        // alt: [expectedNewCommit, oldCommit]
+
+// ------------------------------------------
+// Loop: while main stack has limbs, fold into acc
+// ------------------------------------------
+
+OP_BEGIN
+
+  // cond = (OP_DEPTH == 0)
+  OP_DEPTH
+  <0>
+  OP_NUMEQUAL        // cond = (depth == 0) ? 1 : 0
+
+  OP_DUP
+  OP_IF
+    // depth == 0 -> cond == 1
+    // Do nothing; leave cond = 1 for OP_UNTIL (exit loop).
+  OP_ELSE
+    // depth > 0 -> cond == 0
+    // Run one iteration, then re-push 0 for OP_UNTIL.
+
+    OP_DROP          // drop old cond (0)
+
+    // --- body: process top limb with accumulator ---
+
+    // alt:  [..., expectedNewCommit, acc]
+    // main: ... limb_{k-1}
+
+    OP_FROMALTSTACK   // main: ... limb_{k-1} acc
+                      // alt:  [..., expectedNewCommit]
+
+    OP_SWAP           // main: ... acc limb_{k-1}
+
+    <0x02>            // FhashChunk
+    OP_INVOKE         // main: ... acc' = HASH256(acc || limb_{k-1})
+
+    OP_TOALTSTACK     // alt: [..., expectedNewCommit, acc']
+                      // main: ... remaining limbs
+
+    // Keep looping
+    <0>
+  OP_ENDIF
+
+OP_UNTIL
+
+// After loop:
+//
+//   main: (empty)
+//   alt:  [expectedNewCommit, finalAcc]
+
+OP_FROMALTSTACK      // main: finalAcc
+                     // alt:  [expectedNewCommit]
+OP_FROMALTSTACK      // main: finalAcc expectedNewCommit
+                     // alt:  (empty)
+
+OP_SWAP              // main: expectedNewCommit finalAcc
+OP_EQUALVERIFY       // abort if mismatch
+
+OP_1                 // success
