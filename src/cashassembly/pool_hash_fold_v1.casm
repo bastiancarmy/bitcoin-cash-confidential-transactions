@@ -3,7 +3,7 @@
   OP_CAT
   OP_HASH256
 >
-<0x02>
+OP_2
 OP_DEFINE
 
 // Unlocking must push only:
@@ -35,7 +35,7 @@ OP_BEGIN
                          // alt:  (empty)
     OP_SWAP              // main: ... acc limb
 
-    <0x02>
+    OP_2
     OP_INVOKE            // main: ... acc' = HASH256(acc || limb)
 
     OP_TOALTSTACK        // alt: [acc']

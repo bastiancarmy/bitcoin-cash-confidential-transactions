@@ -42,69 +42,60 @@ export function computePoolHashFold(oldCommit, limbs) {
   return acc;
 }
 
-/**
- * v0 unlocking: push limbs + oldCommit + expectedNewCommit
- */
-export function buildPoolHashFoldUnlockingV0() {
-  const limb0 = new Uint8Array([0x01]);
-  const limb1 = new Uint8Array([0x02]);
-  const limb2 = new Uint8Array([0x03]);
-  const limbs = [limb0, limb1, limb2];
+// Minimal script-number pushes for 0..16
+// 0  -> OP_0 (0x00)
+// 1–16 -> OP_1..OP_16 (0x51..0x60)
+function opSmallInt(n) {
+  if (n === 0) return Uint8Array.of(0x00); // OP_0
+  if (n >= 1 && n <= 16) return Uint8Array.of(0x50 + n); // OP_1..OP_16
 
-  const oldCommit = new Uint8Array(32); // 32 bytes of zero
+  throw new Error(`opSmallInt: out of range (${n})`);
+}
+
+function buildPoolHashFoldUnlockingV0() {
+  // 1-byte limb values we want in the fold:
+  const limbValues = [1, 2, 3];
+
+  // Actual bytes that the hash fold will see:
+  const limbs = limbValues.map((v) => Uint8Array.of(v));
+
+  const oldCommit = new Uint8Array(32); // all zeros
   const expectedNewCommit = computePoolHashFold(oldCommit, limbs);
-
-  console.log('pool_hash_fold v0 limbs + commits:');
-  console.log('  limb0:', bytesToHex(limb0));
-  console.log('  limb1:', bytesToHex(limb1));
-  console.log('  limb2:', bytesToHex(limb2));
-  console.log('  oldCommit:', bytesToHex(oldCommit));
-  console.log('  expectedNewCommit:', bytesToHex(expectedNewCommit));
 
   const pushes = [];
 
-  // <limb0> <limb1> <limb2>
-  for (const limb of limbs) {
-    pushes.push(pushDataPrefix(limb.length), limb);
+  // MINIMALDATA: push 1, 2, 3 as OP_1, OP_2, OP_3
+  for (const v of limbValues) {
+    pushes.push(opSmallInt(v));
   }
 
-  // <oldCommit>
+  // oldCommit (32 bytes) – normal data push is already minimal
   pushes.push(pushDataPrefix(oldCommit.length), oldCommit);
 
-  // <expectedNewCommit>
-  pushes.push(pushDataPrefix(expectedNewCommit.length), expectedNewCommit);
+  // expectedNewCommit (32 bytes)
+  pushes.push(
+    pushDataPrefix(expectedNewCommit.length),
+    expectedNewCommit
+  );
 
-  return {
-    unlocking: concat(...pushes),
-    limbs,
-    oldCommit,
-    expectedNewCommit,
-  };
+  const unlocking = concatUint8Arrays(...pushes);
+  return { limbValues, limbs, oldCommit, expectedNewCommit, unlocking };
 }
 
 /**
  * v1 unlocking: push only limbs; commitments come from NFT introspection.
  */
-export function buildPoolHashFoldUnlockingV1() {
-  const limb0 = new Uint8Array([0x01]);
-  const limb1 = new Uint8Array([0x02]);
-  const limb2 = new Uint8Array([0x03]);
-  const limbs = [limb0, limb1, limb2];
-
-  console.log('pool_hash_fold v1 limbs (introspective commits):');
-  console.log('  limb0:', bytesToHex(limb0));
-  console.log('  limb1:', bytesToHex(limb1));
-  console.log('  limb2:', bytesToHex(limb2));
+function buildPoolHashFoldUnlockingV1() {
+  const limbValues = [1, 2, 3];
+  const limbs = limbValues.map((v) => Uint8Array.of(v));
 
   const pushes = [];
-  for (const limb of limbs) {
-    pushes.push(pushDataPrefix(limb.length), limb);
+  for (const v of limbValues) {
+    pushes.push(opSmallInt(v)); // OP_1, OP_2, OP_3
   }
 
-  return {
-    unlocking: concat(...pushes),
-    limbs,
-  };
+  const unlocking = concat(...pushes);
+  return { limbValues, limbs, unlocking };
 }
 
 /**

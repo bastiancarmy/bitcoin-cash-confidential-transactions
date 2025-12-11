@@ -3,7 +3,7 @@
   OP_CAT
   OP_HASH256
 >
-<0x02>
+OP_2
 OP_DEFINE
 
 // Unlocking must push:
@@ -33,7 +33,7 @@ OP_BEGIN
                      // alt:  [..., expectedNewCommit]
     OP_SWAP          // main: ... acc limb
 
-    <0x02>
+    OP_2
     OP_INVOKE        // main: ... acc' = H(acc || limb)
 
     OP_TOALTSTACK    // alt: [..., expectedNewCommit, acc']
