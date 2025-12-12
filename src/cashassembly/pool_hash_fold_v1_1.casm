@@ -1,0 +1,49 @@
+// FhashChunk: acc' = HASH256(acc || limb)
+<
+  OP_CAT
+  OP_HASH256
+>
+OP_2
+OP_DEFINE
+
+// v1.1: proofBlob must be 32 bytes, then drop it
+// unlocking pushes ... limbs ... noteHash32 proofBlob
+OP_SIZE
+<0x20>
+OP_EQUALVERIFY
+OP_DROP
+
+// Step A: load oldCommit from this input's NFT commitment
+<0>
+OP_UTXOTOKENCOMMITMENT
+OP_TOALTSTACK            // alt: [acc=oldCommit]
+
+// Step B: fold all remaining stack items into acc (noteHash32 + limbs)
+OP_BEGIN
+  OP_DEPTH
+  OP_NOT                 // 1 iff depth==0
+  OP_DUP
+  OP_IF
+    // depth==0 -> exit (leave 1 for OP_UNTIL)
+  OP_ELSE
+    OP_DROP              // drop 0
+
+    OP_FROMALTSTACK      // ... limb acc
+    OP_SWAP              // ... acc limb
+
+    OP_2
+    OP_INVOKE            // acc' = HASH256(acc||limb)
+
+    OP_TOALTSTACK        // alt: [acc']
+    <0>                  // continue
+  OP_ENDIF
+OP_UNTIL
+
+OP_FROMALTSTACK          // finalAcc
+
+// Step C: compare finalAcc vs output[0] NFT commitment
+<0>
+OP_OUTPUTTOKENCOMMITMENT
+OP_SWAP
+OP_EQUALVERIFY
+OP_1

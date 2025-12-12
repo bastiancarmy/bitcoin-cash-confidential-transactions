@@ -244,7 +244,7 @@ function printPhase1Report({
 /* Basic TX parsing helpers                                                   */
 /* -------------------------------------------------------------------------- */
 
-function parseTx(txHex) {
+function parseRawTx(txHex) {
   const bytes = hexToBytes(txHex);
   let pos = 0;
 
@@ -350,7 +350,7 @@ async function getCovenantUtxoFromTxId(txId, network) {
   const client = await connectElectrum(network);
   try {
     const txHex = await client.request('blockchain.transaction.get', txId);
-    const txDetails = parseTx(txHex);
+    const txDetails = parseRawTx(txHex);
 
     let covenantOutput = txDetails.outputs.find(
       (out) => out.token_data && out.token_data.nft,
@@ -1107,7 +1107,9 @@ async function mainCli(argv) {
   if (argv[2] === 'pool') {
     const versionArg = argv[3] || 'v0';
     const version =
-      versionArg === 'v1' ? POOL_HASH_FOLD_VERSION.V1 : POOL_HASH_FOLD_VERSION.V0;
+      versionArg === 'v1'   ? POOL_HASH_FOLD_VERSION.V1   :
+      versionArg === 'v1_1' ? POOL_HASH_FOLD_VERSION.V1_1 :
+      POOL_HASH_FOLD_VERSION.V0;
 
     const { alice } = await getWallets();
     const res = await demoPoolHashFold(alice, NETWORK, { version });

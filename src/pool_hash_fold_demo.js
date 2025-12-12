@@ -97,23 +97,37 @@ function buildPoolHashFoldUnlockingV0() {
   return { limbValues, limbs, oldCommit, expectedNewCommit, unlocking };
 }
 
-function buildPoolHashFoldUnlockingV1(limbValues = [1, 2, 3], noteHash32 = null) {
-  const limbs = limbValues.map((v) => Uint8Array.of(v));
+function limbToBytes(v) {
+  if (typeof v === 'number') {
+    if (v < 0 || v > 255) throw new Error('number limb must fit in 1 byte for v1/v1.1 demo');
+    return Uint8Array.of(v);
+  }
+  if (v instanceof Uint8Array) return v;
+  throw new Error('unsupported limb type');
+}
+
+function buildPoolHashFoldUnlockingV1(
+  limbValues = [1,2,3],
+  noteHash32 = null,
+  proofBlob = null
+) {
+  const limbs = limbValues.map(limbToBytes);
 
   const pushes = [];
-  for (const v of limbValues) pushes.push(opSmallInt(v));
+  for (const v of limbValues) pushes.push(pushLimb(v));
 
-  // If provided, push noteHash as the LAST item (top of stack)
   if (noteHash32) {
-    if (!(noteHash32 instanceof Uint8Array) || noteHash32.length !== 32) {
-      throw new Error('noteHash32 must be Uint8Array(32)');
-    }
-    pushes.push(pushDataPrefix(noteHash32.length), noteHash32);
-    limbs.push(noteHash32); // IMPORTANT: include it in off-chain fold computation
+    pushes.push(pushDataPrefix(32), noteHash32);
+    limbs.push(noteHash32);
   }
 
-  const unlocking = concat(...pushes);
-  return { limbValues, limbs, unlocking, noteHash32 };
+  if (proofBlob) {
+    if (!(proofBlob instanceof Uint8Array)) throw new Error('proofBlob must be Uint8Array');
+      if (proofBlob.length !== 32) throw new Error('proofBlob must be exactly 32 bytes for v1.1');
+    pushes.push(pushDataPrefix(proofBlob.length), proofBlob);
+  }
+
+  return { limbValues, limbs, unlocking: concat(...pushes), noteHash32, proofBlob };
 }
 
 /**
@@ -174,7 +188,7 @@ export async function fundPoolHashFoldUtxo(
     // Bare script
     const v0Bytecode = await getPoolHashFoldBytecode(POOL_HASH_FOLD_VERSION.V0);
     covenantScriptPubKey = v0Bytecode;
-  } else if (version === POOL_HASH_FOLD_VERSION.V1) {
+  } else if (version === POOL_HASH_FOLD_VERSION.V1 || version === POOL_HASH_FOLD_VERSION.V1_1) {
     // Tokenized, introspective NFT with commitment = oldCommit (zeros)
     const txidBytes = hexToBytes(baseUtxo.txid);
     tokenCategory = reverseBytes(txidBytes); // simple category choice for demo
@@ -189,7 +203,7 @@ export async function fundPoolHashFoldUtxo(
       },
     };    
 
-    const v1Bytecode = await getPoolHashFoldBytecode(POOL_HASH_FOLD_VERSION.V1);
+    const v1Bytecode = await getPoolHashFoldBytecode(version);
     covenantScriptPubKey = addTokenToScript(token, v1Bytecode);
   } else {
     throw new Error(`Unknown pool_hash_fold version: ${version}`);
@@ -296,8 +310,8 @@ export async function spendPoolHashFoldUtxo(
     return txid;
   }
 
-  if (version === POOL_HASH_FOLD_VERSION.V1) {
-    // --- v1: tokenized, introspective NFT state update ---
+  if (version === POOL_HASH_FOLD_VERSION.V1 || version === POOL_HASH_FOLD_VERSION.V1_1) {
+    // --- v1/v1.1: tokenized, introspective NFT state update ---
 
     if (!covenantUtxo.tokenCategory || !covenantUtxo.oldCommit) {
       throw new Error(
@@ -305,15 +319,23 @@ export async function spendPoolHashFoldUtxo(
       );
     }
     
-    // example: deterministic plaintext note hash
-    const noteHash32 = sha256(
-      concat(
-        Uint8Array.of(0x01),                 // domain separator
-        Uint8Array.from(normalizedLimbValues)
-      )
-    );
+    const noteHash32 = sha256(concat(
+      Uint8Array.of(0x01),
+      Uint8Array.from(normalizedLimbValues),
+    ));
 
-    const { unlocking, limbs } = buildPoolHashFoldUnlockingV1(normalizedLimbValues, noteHash32);
+    // v1.1 requires this; v1 can ignore it but it doesn't hurt to include
+    const proofBlob = sha256(concat(
+      Uint8Array.of(0x50),
+      noteHash32,
+    ));
+
+    if (version === POOL_HASH_FOLD_VERSION.V1_1 && proofBlob.length !== 32) {
+      throw new Error('v1.1 proofBlob must be 32 bytes');
+    }
+    
+    const { unlocking, limbs } =
+      buildPoolHashFoldUnlockingV1(normalizedLimbValues, noteHash32, proofBlob);
     console.log('pool_hash_fold v1 unlocking hex:', bytesToHex(unlocking));
 
     if (covenantUtxo.value - fee < DUST) {
@@ -333,7 +355,7 @@ export async function spendPoolHashFoldUtxo(
       category: covenantUtxo.tokenCategory,
       nft: { capability: 'mutable', commitment: newCommit },
     };
-    const v1Bytecode = await getPoolHashFoldBytecode(POOL_HASH_FOLD_VERSION.V1);
+    const v1Bytecode = await getPoolHashFoldBytecode(version);
     const newCovenantScript = addTokenToScript(token, v1Bytecode);
    
     const tx = {
@@ -378,7 +400,7 @@ export async function spendPoolHashFoldUtxo(
       txid,
       vout: 0,
       value: newValue,
-      version: POOL_HASH_FOLD_VERSION.V1,
+      version,
       tokenCategory: covenantUtxo.tokenCategory,
       oldCommit: newCommit, // <- state baton pass
     };

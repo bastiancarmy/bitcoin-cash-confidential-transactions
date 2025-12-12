@@ -2,10 +2,12 @@
 import { bytesToHex } from './utils.js';
 import v0Casm from './cashassembly/pool_hash_fold_v0.casm';
 import v1Casm from './cashassembly/pool_hash_fold_v1.casm';
+import v11Casm from './cashassembly/pool_hash_fold_v1_1.casm';
 
 export const POOL_HASH_FOLD_VERSION = {
   V0: 'v0',
   V1: 'v1',
+  V1_1: 'v1_1',
 };
 
 // Cache the libauth module so we only import it once
@@ -40,6 +42,7 @@ async function compileCasm(casmSource, label) {
 // Lazy, cached compilation per version
 let cachedV0 = null;
 let cachedV1 = null;
+let cachedV11 = null;
 
 export async function getPoolHashFoldBytecode(version) {
   if (version === POOL_HASH_FOLD_VERSION.V0) {
@@ -55,6 +58,11 @@ export async function getPoolHashFoldBytecode(version) {
     }
     return cachedV1;
   }
+
+  if (version === POOL_HASH_FOLD_VERSION.V1_1) {
+      if (!cachedV11) cachedV11 = await compileCasm(v11Casm, 'pool_hash_fold_v1_1.casm');
+      return cachedV11;
+    }
 
   throw new Error(`Unknown pool_hash_fold version: ${version}`);
 }
