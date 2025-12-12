@@ -60,6 +60,8 @@ function buildPoolHashFoldUnlockingV0() {
   const limbs = limbValues.map((v) => Uint8Array.of(v));
 
   const oldCommit = new Uint8Array(32); // all zeros
+
+  // Correct order: (oldCommit, limbs)
   const expectedNewCommit = computePoolHashFold(oldCommit, limbs);
 
   const pushes = [];
@@ -69,7 +71,7 @@ function buildPoolHashFoldUnlockingV0() {
     pushes.push(opSmallInt(v));
   }
 
-  // oldCommit (32 bytes) – normal data push is already minimal
+  // oldCommit (32 bytes)
   pushes.push(pushDataPrefix(oldCommit.length), oldCommit);
 
   // expectedNewCommit (32 bytes)
@@ -78,7 +80,9 @@ function buildPoolHashFoldUnlockingV0() {
     expectedNewCommit
   );
 
-  const unlocking = concatUint8Arrays(...pushes);
+  // Use the existing concat helper
+  const unlocking = concat(...pushes);
+
   return { limbValues, limbs, oldCommit, expectedNewCommit, unlocking };
 }
 
@@ -166,10 +170,10 @@ export async function fundPoolHashFoldUtxo(
     const token = {
       category: tokenCategory,
       nft: {
-        capability: 'none',  // or 0 depending on your addTokenToScript convention
+        capability: 'mutable',   // allows commitment updates
         commitment: oldCommit,
       },
-    };
+    };    
 
     const v1Bytecode = await getPoolHashFoldBytecode(POOL_HASH_FOLD_VERSION.V1);
     covenantScriptPubKey = addTokenToScript(token, v1Bytecode);
@@ -298,7 +302,7 @@ export async function spendPoolHashFoldUtxo(
     const token = {
       category: covenantUtxo.tokenCategory,
       nft: {
-        capability: 'none',
+        capability: 'mutable',   // same capability, new commitment
         commitment: newCommit,
       },
     };
