@@ -69,22 +69,21 @@ export async function connectElectrum(network = NETWORK, retries = 10) {
   throw new Error('No Electrum servers available after retries');
 }
 
-// update getUtxos and getUtxosFromScripthash to include unconfirmed UTXOs
-export async function getUtxosFromScripthash(scriptHash, network, includeUnconfirmed = true) { // Add includeUnconfirmed param, default true
+export async function getUtxosFromScripthash(scriptHash, network = NETWORK, includeUnconfirmed = true) {
   const client = await connectElectrum(network);
   try {
-    const method = includeUnconfirmed ? 'blockchain.scripthash.listunspent' : 'blockchain.scripthash.get_balance'; // Use listunspent for all (incl. unconf)
     const utxos = await client.request('blockchain.scripthash.listunspent', scriptHash);
     console.log('Fetched', utxos.length, 'UTXOs');
-    const processedUtxos = utxos.map(utxo => ({
+
+    const processed = utxos.map((utxo) => ({
       txid: utxo.tx_hash,
       vout: utxo.tx_pos,
       value: utxo.value,
-      height: utxo.height, // 0 for unconfirmed
-      token_data: utxo.token_data // If present
+      height: utxo.height,           // 0 for unconfirmed
+      token_data: utxo.token_data,   // if server provides it
     }));
-    // Optionally filter confirmed only if !includeUnconfirmed
-    return includeUnconfirmed ? processedUtxos : processedUtxos.filter(u => u.height > 0);
+
+    return includeUnconfirmed ? processed : processed.filter((u) => u.height > 0);
   } finally {
     await client.disconnect();
   }
@@ -96,7 +95,7 @@ export async function getUtxos(address, network, includeUnconfirmed = true) {
   return getUtxosFromScripthash(scriptHash, network, includeUnconfirmed);
 }
 
-export async function getFeeRate() {
+export async function getFeeRate(network = NETWORK) {
   global.lastFeeRate = global.lastFeeRate || null;
   global.lastFeeRateTime = global.lastFeeRateTime || 0;
 
@@ -104,36 +103,32 @@ export async function getFeeRate() {
     return global.lastFeeRate;
   }
 
-  const client = await connectElectrum();
-  let feeRate = 1; // Default fallback
+  const client = await connectElectrum(network);
+  let feeRate = 1;
 
   try {
-    // First, try to get the relay fee (minimum)
+    // relay fee
     let relayFeeBCHPerKB = await client.request('blockchain.relayfee');
     if (relayFeeBCHPerKB < 0) relayFeeBCHPerKB = 0.00001;
-    const relayFeeSatPerByte = Math.ceil(relayFeeBCHPerKB * 1e8 / 1000);
+    const relayFeeSatPerByte = Math.ceil((relayFeeBCHPerKB * 1e8) / 1000);
     console.log(`Server relay fee: ${relayFeeBCHPerKB} BCH/kB (${relayFeeSatPerByte} sat/byte)`);
 
-    // Then, try estimatefee for dynamic rate (2 blocks target)
+    // estimatefee
     let estimatedFeeBCHPerKB = await client.request('blockchain.estimatefee', 2);
     let estimatedFeeSatPerByte = 1;
     if (estimatedFeeBCHPerKB >= 0) {
-      estimatedFeeSatPerByte = Math.ceil(estimatedFeeBCHPerKB * 1e8 / 1000);
+      estimatedFeeSatPerByte = Math.ceil((estimatedFeeBCHPerKB * 1e8) / 1000);
     } else {
       console.warn('Estimatefee returned -1; using relay fee as base');
     }
 
-    // Use the maximum of relay and estimated, with a minimum of 1
     feeRate = Math.max(relayFeeSatPerByte, estimatedFeeSatPerByte, 1);
 
-    // Optional: add a small buffer if on chipnet or known congested nets
-    if (NETWORK === 'chipnet') {
-      feeRate = Math.max(feeRate, 2); // Adjust based on testing
-    }
-
+    // chipnet guardrail
+    if (network === 'chipnet') feeRate = Math.max(feeRate, 2);
   } catch (err) {
     console.error('Fee fetch failed:', err);
-    feeRate = 2; // Higher fallback for debugging
+    feeRate = network === 'chipnet' ? 2 : 1;
   } finally {
     await client.disconnect();
   }
@@ -160,18 +155,19 @@ export async function estimateFee() {
   }
 }
 
-export async function broadcastTx(txHex) {
-  const client = await connectElectrum(NETWORK);
+export async function broadcastTx(txHex, network = NETWORK) {
+  const client = await connectElectrum(network);
   try {
     const response = await client.request('blockchain.transaction.broadcast', txHex);
     console.log('Broadcast response:', response, 'Type:', typeof response);
+
     if (typeof response === 'string' && response.length === 64 && /^[0-9a-f]{64}$/i.test(response)) {
       return response;
-    } else if (typeof response === 'object' && response.error) {
-      throw new Error(`Broadcast error: ${response.error.message ?? JSON.stringify(response.error)}`);
-    } else {
-      throw new Error(`Invalid broadcast response: ${JSON.stringify(response)}`);
     }
+    if (typeof response === 'object' && response?.error) {
+      throw new Error(`Broadcast error: ${response.error.message ?? JSON.stringify(response.error)}`);
+    }
+    throw new Error(`Invalid broadcast response: ${JSON.stringify(response)}`);
   } finally {
     await client.disconnect();
   }

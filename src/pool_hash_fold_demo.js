@@ -8,7 +8,7 @@ import {
   estimateTxSize,
   addTokenToScript,
 } from './tx.js';
-import { broadcastTx, getFeeRate } from './electrum.js';
+import { broadcastTx, getFeeRate, parseTx } from './electrum.js';
 import {
   concat,
   pushDataPrefix,
@@ -16,6 +16,7 @@ import {
   hexToBytes,
   _hash160,
   reverseBytes,
+  minimalScriptNumber
 } from './utils.js';
 import {
   getPoolHashFoldBytecode,
@@ -52,6 +53,18 @@ function opSmallInt(n) {
   throw new Error(`opSmallInt: out of range (${n})`);
 }
 
+function pushLimb(v) {
+  if (typeof v === 'number') {
+    if (v >= 0 && v <= 16) return opSmallInt(v);
+    const b = minimalScriptNumber(BigInt(v));
+    return concat(pushDataPrefix(b.length), b);
+  }
+  if (v instanceof Uint8Array) {
+    return concat(pushDataPrefix(v.length), v);
+  }
+  throw new Error('unsupported limb type');
+}
+
 function buildPoolHashFoldUnlockingV0() {
   // 1-byte limb values we want in the fold:
   const limbValues = [1, 2, 3];
@@ -67,9 +80,7 @@ function buildPoolHashFoldUnlockingV0() {
   const pushes = [];
 
   // MINIMALDATA: push 1, 2, 3 as OP_1, OP_2, OP_3
-  for (const v of limbValues) {
-    pushes.push(opSmallInt(v));
-  }
+  for (const v of limbValues) pushes.push(pushLimb(v));
 
   // oldCommit (32 bytes)
   pushes.push(pushDataPrefix(oldCommit.length), oldCommit);
@@ -86,20 +97,23 @@ function buildPoolHashFoldUnlockingV0() {
   return { limbValues, limbs, oldCommit, expectedNewCommit, unlocking };
 }
 
-/**
- * v1 unlocking: push only limbs; commitments come from NFT introspection.
- */
-function buildPoolHashFoldUnlockingV1() {
-  const limbValues = [1, 2, 3];
+function buildPoolHashFoldUnlockingV1(limbValues = [1, 2, 3], noteHash32 = null) {
   const limbs = limbValues.map((v) => Uint8Array.of(v));
 
   const pushes = [];
-  for (const v of limbValues) {
-    pushes.push(opSmallInt(v)); // OP_1, OP_2, OP_3
+  for (const v of limbValues) pushes.push(opSmallInt(v));
+
+  // If provided, push noteHash as the LAST item (top of stack)
+  if (noteHash32) {
+    if (!(noteHash32 instanceof Uint8Array) || noteHash32.length !== 32) {
+      throw new Error('noteHash32 must be Uint8Array(32)');
+    }
+    pushes.push(pushDataPrefix(noteHash32.length), noteHash32);
+    limbs.push(noteHash32); // IMPORTANT: include it in off-chain fold computation
   }
 
   const unlocking = concat(...pushes);
-  return { limbValues, limbs, unlocking };
+  return { limbValues, limbs, unlocking, noteHash32 };
 }
 
 /**
@@ -222,10 +236,17 @@ export async function fundPoolHashFoldUtxo(
 
 export async function spendPoolHashFoldUtxo(
   alice,
-  covenantUtxo,  // { txid, vout, value, version, tokenCategory?, oldCommit? }
+  covenantUtxo,
   network,
-  { version = POOL_HASH_FOLD_VERSION.V0 } = {}
+  {
+    version = POOL_HASH_FOLD_VERSION.V0,
+    limbValues,
+    limbs,                 // <- alias
+  } = {}
 ) {
+  // Normalize: prefer explicit limbValues, else limbs, else default
+  const normalizedLimbValues = limbValues ?? limbs ?? [1, 2, 3];
+
   const alicePriv = alice.privBytes;
   const alicePub33 = secp256k1.getPublicKey(alicePriv, true);
   const aliceHash160 = _hash160(alicePub33);
@@ -283,8 +304,16 @@ export async function spendPoolHashFoldUtxo(
         'v1 spend requires tokenCategory and oldCommit from funding step'
       );
     }
+    
+    // example: deterministic plaintext note hash
+    const noteHash32 = sha256(
+      concat(
+        Uint8Array.of(0x01),                 // domain separator
+        Uint8Array.from(normalizedLimbValues)
+      )
+    );
 
-    const { unlocking, limbs } = buildPoolHashFoldUnlockingV1();
+    const { unlocking, limbs } = buildPoolHashFoldUnlockingV1(normalizedLimbValues, noteHash32);
     console.log('pool_hash_fold v1 unlocking hex:', bytesToHex(unlocking));
 
     if (covenantUtxo.value - fee < DUST) {
@@ -299,18 +328,14 @@ export async function spendPoolHashFoldUtxo(
     console.log('  oldCommit:', bytesToHex(oldCommit));
     console.log('  newCommit:', bytesToHex(newCommit));
 
+    // build output[0] covenant script with updated commitment
     const token = {
       category: covenantUtxo.tokenCategory,
-      nft: {
-        capability: 'mutable',   // same capability, new commitment
-        commitment: newCommit,
-      },
+      nft: { capability: 'mutable', commitment: newCommit },
     };
-    
     const v1Bytecode = await getPoolHashFoldBytecode(POOL_HASH_FOLD_VERSION.V1);
-    // Output[0] must be the NFT-bearing covenant so OP_OUTPUTTOKENCOMMITMENT 0 sees it.
-    const newCovenantScript = addTokenToScript(token, v1Bytecode);    
-
+    const newCovenantScript = addTokenToScript(token, v1Bytecode);
+   
     const tx = {
       version: 1,
       inputs: [
@@ -332,14 +357,33 @@ export async function spendPoolHashFoldUtxo(
 
     const txHex = buildRawTx(tx);
     console.log('pool_hash_fold v1 spend tx hex:', txHex);
-
+    
+    // ✅ sanity-check: parse the tx we are about to broadcast
+    const parsed = parseTx(txHex);
+    const out0 = parsed.outputs[0];
+    const outCommit = out0.token_data?.nft?.commitment;
+    
+    if (!outCommit || bytesToHex(outCommit) !== bytesToHex(newCommit)) {
+      console.error('computed newCommit:', bytesToHex(newCommit));
+      console.error('parsed outCommit   :', outCommit ? bytesToHex(outCommit) : null);
+      throw new Error('Output commitment mismatch vs computed newCommit');
+    }
+    
     const txid = await broadcastTx(txHex, network);
     console.log('✅ pool_hash_fold v1 spend txid:', txid);
     console.log(
       '  (NFT commitment updated via introspective fold; BCH balance shrank by fee.)'
     );
+    const nextCovenantUtxo = {
+      txid,
+      vout: 0,
+      value: newValue,
+      version: POOL_HASH_FOLD_VERSION.V1,
+      tokenCategory: covenantUtxo.tokenCategory,
+      oldCommit: newCommit, // <- state baton pass
+    };
 
-    return txid;
+    return { txid, txHex, oldCommit, newCommit, limbValues, normalizedLimbValues, nextCovenantUtxo };
   }
 
   throw new Error(`Unknown pool_hash_fold version: ${version}`);
