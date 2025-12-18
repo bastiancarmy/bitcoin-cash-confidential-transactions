@@ -1,0 +1,109 @@
+// ------------------------------------------
+// 1. Define FhashChunk as function id 0x02
+//
+//   Pre:  ... acc limb
+//   Post: ... acc' = HASH256(acc || limb)
+// ------------------------------------------
+
+<
+  OP_CAT
+  OP_HASH256
+>
+<0x02>
+OP_DEFINE
+
+// ------------------------------------------
+// 2. Main body: hash-fold proof limbs into a
+//    state accumulator derived from the
+//    input token commitment.
+// ------------------------------------------
+//
+// Unlocking script must push:
+//   <limb0> <limb1> ... <limbN-1>
+//
+// At entry:
+//   main:  limb0 limb1 ... limbN-1
+//   alt:   (empty)
+//
+// Step A: read oldCommit from input 0 and
+//         use it as the initial accumulator.
+// ------------------------------------------
+
+// index 0 -> token commitment on this input
+<0>
+OP_UTXOTOKENCOMMITMENT   // main: limbs... oldCommit
+
+// In production you’d probably verify this
+// isn’t the VM integer 0, but we’ll assume
+// the covenant always has a token here.
+
+OP_TOALTSTACK            // alt: [acc = oldCommit]
+                         // main: limb0 ... limbN-1
+
+// ------------------------------------------
+// Step B: loop over limbs while any remain.
+//   While OP_DEPTH != 0:
+//     acc  = HASH256(acc || top_limb)
+//     pop that limb
+// ------------------------------------------
+
+OP_BEGIN
+
+  // cond = (OP_DEPTH == 0)
+  OP_DEPTH
+  <0>
+  OP_NUMEQUAL            // cond = 1 if no limbs, else 0
+
+  OP_DUP
+  OP_IF
+    // depth == 0 -> cond == 1
+    // Do nothing; leave cond = 1 for OP_UNTIL
+  OP_ELSE
+    // depth > 0 -> cond == 0
+    // Run one iteration of the body, then
+    // rebuild cond = 0 so OP_UNTIL repeats.
+
+    OP_DROP              // drop old cond (0)
+
+    // --- body: process top limb with acc ---
+
+    // alt: [acc]
+    // main: ... limb_{k-1}
+    OP_FROMALTSTACK      // main: ... limb_{k-1} acc
+                         // alt:  (empty)
+
+    OP_SWAP              // main: ... acc limb_{k-1}
+
+    <0x02>               // function id for FhashChunk
+    OP_INVOKE            // main: ... acc' = HASH256(acc || limb)
+
+    OP_TOALTSTACK        // alt: [acc']
+                         // main: ... remaining limbs
+
+    // Rebuild cond = 0 for OP_UNTIL
+    <0>
+  OP_ENDIF
+
+OP_UNTIL
+
+// After loop:
+//   main:  (empty)
+//   alt:   [finalAcc]
+OP_FROMALTSTACK          // main: finalAcc
+
+// ------------------------------------------
+// Step C: load newCommit from output 0 and
+//         require finalAcc == newCommit.
+//
+//   finalAcc == fold(oldCommit, limbs...)
+// ------------------------------------------
+
+// index 0 -> token commitment on output 0
+<0>
+OP_OUTPUTTOKENCOMMITMENT // main: finalAcc newCommit
+
+OP_SWAP                  // main: newCommit finalAcc
+OP_EQUALVERIFY           // abort if mismatch
+
+// All good: this pool update is valid.
+OP_1

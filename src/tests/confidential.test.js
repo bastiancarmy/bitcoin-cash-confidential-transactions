@@ -28,6 +28,14 @@ import {
   pedersenCommit64,
 } from '../pedersen.js';
 
+import {
+  buildAmountProofEnvelope,
+  verifyAmountProofEnvelope,
+  BITS,
+} from '../zk.js';
+
+import { buildProofEnvelope, parseProofEnvelope } from '../transcript.js';
+
 /* -------------------------------------------------------------------------- */
 /* Tiny test harness                                                          */
 /* -------------------------------------------------------------------------- */
@@ -51,7 +59,7 @@ async function runTest(name, fn) {
 
 async function main() {
   console.log('══════════════════════════════════════════════');
-  console.log(' Phase-1: RPA + confidential asset test suite');
+  console.log(' Phase-1/2: RPA + CTv1 amount proof test suite');
   console.log('══════════════════════════════════════════════\n');
 
   await runTest(
@@ -67,6 +75,11 @@ async function main() {
   await runTest(
     'Pedersen commit basic consistency (64-bit value)',
     testPedersenCommit64,
+  );
+
+  await runTest(
+    'Amount envelope round-trip (build + verify)',
+    testAmountEnvelopeRoundTrip,
   );
 
   if (globalThis.__phase1TestsFailed) {
@@ -302,3 +315,137 @@ main().catch((err) => {
   console.error('Unexpected error in Phase-1 test runner:', err);
   process.exit(1);
 });
+
+/* -------------------------------------------------------------------------- */
+/* Test 4: Envelope Round Trip                                                */
+/* -------------------------------------------------------------------------- */
+async function testAmountEnvelopeRoundTrip() {
+  const zkSeed = randomBytes(32);
+  const ephemPriv = randomBytes(32);
+  const ephemPub33 = secp256k1.getPublicKey(ephemPriv, true);
+
+  const value = 123456n;
+
+  console.log('  [AmountEnvelope] value      =', value.toString());
+  console.log('  [AmountEnvelope] zkSeed     =', bytesToHex(zkSeed));
+  console.log('  [AmountEnvelope] ephemPub33 =', bytesToHex(ephemPub33));
+
+  const { envelope, proofHash, commitmentC33 } = buildAmountProofEnvelope({
+    value,
+    zkSeed,
+    ephemPub33,
+    assetId32: null,
+    outIndex: 0,
+  });
+
+  console.log('  [AmountEnvelope] envelope length =', envelope.length, 'bytes');
+  console.log('  [AmountEnvelope] proofHash       =', bytesToHex(proofHash));
+  console.log('  [AmountEnvelope] commitmentC33   =', bytesToHex(commitmentC33));
+
+  // Parse the envelope and try to discover how the header is exposed
+  const parsed = parseProofEnvelope(envelope);
+  const header =
+    parsed && typeof parsed === 'object' && parsed.header && typeof parsed.header === 'object'
+      ? parsed.header
+      : parsed;
+
+  console.log('  [AmountEnvelope] header-like keys =', Object.keys(header));
+
+  /* -------------------- protocolTag (optional assertion) ------------------- */
+  if (typeof header.protocolTag !== 'undefined') {
+    console.log('  [AmountEnvelope] header.protocolTag =', header.protocolTag);
+    assert(
+      header.protocolTag === 'BCH-CT/Sigma64-v1',
+      `Envelope protocolTag mismatch (expected BCH-CT/Sigma64-v1, got ${header.protocolTag})`,
+    );
+  } else {
+    console.log(
+      '  [AmountEnvelope] header.protocolTag not exposed by parseProofEnvelope (skipping check)',
+    );
+  }
+
+  /* ----------------------- rangeBits (optional assert) --------------------- */
+  if (typeof header.rangeBits !== 'undefined') {
+    console.log('  [AmountEnvelope] header.rangeBits   =', header.rangeBits);
+    assert(
+      header.rangeBits === BITS,
+      `Envelope rangeBits mismatch (expected ${BITS}, got ${header.rangeBits})`,
+    );
+  } else {
+    console.log(
+      '  [AmountEnvelope] header.rangeBits not exposed by parseProofEnvelope (skipping check)',
+    );
+  }
+
+  /* -------------------------- outIndex (just log) -------------------------- */
+  if (typeof header.outIndex !== 'undefined') {
+    console.log('  [AmountEnvelope] header.outIndex    =', header.outIndex);
+  } else {
+    console.log(
+      '  [AmountEnvelope] header.outIndex not exposed by parseProofEnvelope (skipping log)',
+    );
+  }
+
+  /* ---------------------- assetId32 (should be null) ----------------------- */
+  const assetId32 =
+    header.assetId32 !== undefined
+      ? header.assetId32
+      : parsed.assetId32 !== undefined
+      ? parsed.assetId32
+      : null;
+
+  console.log(
+    '  [AmountEnvelope] header.assetId32   =',
+    assetId32 ? bytesToHex(assetId32) : 'null',
+  );
+
+  // Only enforce null if the field exists somewhere
+  if ('assetId32' in header || 'assetId32' in parsed) {
+    assert(
+      assetId32 === null,
+      'Envelope assetId32 is not null for null asset test',
+    );
+  }
+
+  /* ------------------- ephemPub33 binding (if exposed) --------------------- */
+  const headerEphem =
+    header.ephemPub33 !== undefined
+      ? header.ephemPub33
+      : parsed.ephemPub33 !== undefined
+      ? parsed.ephemPub33
+      : null;
+
+  if (headerEphem) {
+    console.log(
+      '  [AmountEnvelope] header.ephemPub33  =',
+      bytesToHex(headerEphem),
+    );
+    assert(
+      bytesToHex(headerEphem) === bytesToHex(ephemPub33),
+      'Envelope ephemPub33 mismatch with provided ephemeral pubkey',
+    );
+  } else {
+    console.log(
+      '  [AmountEnvelope] ephemPub33 not exposed by parseProofEnvelope (skipping binding check)',
+    );
+  }
+
+  /* ------------------------- Core verify round-trip ------------------------ */
+  const ok = verifyAmountProofEnvelope(envelope);
+  console.log('  [AmountEnvelope] verify(original) =', ok);
+
+  if (!ok) {
+    throw new Error('Round-trip amount envelope verification failed');
+  }
+
+  // Tamper with the envelope and ensure it fails
+  const tampered = envelope.slice();
+  tampered[tampered.length - 1] ^= 1;
+
+  const okTampered = verifyAmountProofEnvelope(tampered);
+  console.log('  [AmountEnvelope] verify(tampered) =', okTampered);
+
+  if (okTampered) {
+    throw new Error('Tampered envelope unexpectedly verified');
+  }
+}

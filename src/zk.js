@@ -15,6 +15,8 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToBigInt, bigIntToBytes, concat, uint64le } from './utils.js';
+import { getH as getPedersenH, toCompressed } from './pedersen.js';
+import { buildProofEnvelope, parseProofEnvelope } from './transcript.js';
 
 /* ========================================================================== */
 /* Curve constants & generators                                               */
@@ -22,17 +24,12 @@ import { bytesToBigInt, bigIntToBytes, concat, uint64le } from './utils.js';
 
 const Point = secp256k1.Point;
 const G = Point.BASE;
-// v2: curve params via Point.CURVE(). Some builds expose it as a property/function; this form
-// stays compatible with your existing setup.
 const CURVE = Point.CURVE();
-const n = CURVE.n; // curve order
+const n = CURVE.n;
 
-// Deterministic secondary generator H for Pedersen commitments.
-// IMPORTANT (v2): reduce with the curve scalar field instead of bigint % n.
-const h_scalar = Point.Fn.fromBytes(
-  sha256(new TextEncoder().encode('PEDERSEN_H'))
-);
-const H = G.multiply(h_scalar);
+// Re-use the same H as pedersenCommit64 / NFT commitments.
+// This makes the ZK proof, envelope header, and CT math all talk about the same generator.
+const H = getPedersenH();
 
 /* ========================================================================== */
 /* Local configuration                                                        */
@@ -288,4 +285,89 @@ export function computeProofHash(bytes) {
     throw new Error('computeProofHash: bytes must be Uint8Array');
   }
   return sha256(sha256(bytes));
+}
+
+/**
+ * Build a CTv1 amount range-proof envelope for a 64-bit value.
+ *
+ * Inputs:
+ *  - value: sats, 0 <= value < 2^64
+ *  - zkSeed: 32-byte seed from the RPA session (deterministic randomness)
+ *  - ephemPub33: 33-byte compressed ephemeral pubkey (per-payment)
+ *  - assetId32: optional 32-byte asset id (CashToken category), or null
+ *  - outIndex: output index the proof is bound to
+ *  - extraCtx: optional extra context bytes (e.g. transcript tag)
+ *
+ * Returns:
+ *  - envelope: Uint8Array (CTv1 header + core proof)
+ *  - proofHash: Uint8Array(32) (double-SHA256 of envelope)
+ *  - commitmentC: secp256k1.Point (aggregate commitment)
+ *  - commitmentC33: Uint8Array(33) compressed commitment
+ */
+export function buildAmountProofEnvelope({
+  value,
+  zkSeed,
+  ephemPub33,
+  assetId32 = null,
+  outIndex = 0,
+  extraCtx = new Uint8Array(0),
+}) {
+  const vBig = BigInt(value);
+  if (vBig < 0n || vBig >= (1n << 64n)) {
+    throw new Error('buildAmountProofEnvelope: value must be in [0, 2^64)');
+  }
+  if (!(zkSeed instanceof Uint8Array) || zkSeed.length !== 32) {
+    throw new Error('buildAmountProofEnvelope: zkSeed must be Uint8Array(32)');
+  }
+  if (!(ephemPub33 instanceof Uint8Array) || ephemPub33.length !== 33) {
+    throw new Error('buildAmountProofEnvelope: ephemPub33 must be Uint8Array(33)');
+  }
+
+  // 1) Generate the per-bit Sigma range proof deterministically from zkSeed.
+  const proof = generateSigmaRangeProof(vBig, zkSeed);
+  const coreProofBytes = serializeProof(proof);
+
+  // Optional: core hash is useful for binding & debugging
+  const coreHashBytes = computeProofHash(coreProofBytes);
+
+  // 2) Use the shared Pedersen H from pedersen.js in the envelope header.
+  const H33 = toCompressed(H);
+
+  const envelope = buildProofEnvelope({
+    protocolTag: 'BCH-CT/Sigma64-v1',
+    rangeBits: BITS,
+    ephemPub33,
+    H33,
+    assetId32,
+    outIndex,
+    extraCtx,
+    coreProofBytes,
+  });
+
+  const proofHash = computeProofHash(envelope);
+
+  return {
+    envelope,
+    proofHash,          // hash256(envelope)
+    coreProofBytes,     // raw serialized Sigma proof
+    coreHashBytes,      // hash256(coreProofBytes)
+    commitmentC: proof.C,
+    commitmentC33: proof.C_bytes,
+  };
+}
+
+/**
+ * Verify a CTv1 amount envelope.
+ * Currently this just checks the internal Sigma range proof.
+ * Callers can additionally check that `commitmentC` or `commitmentC33`
+ * matches whatever on-chain or metadata commitment they expect.
+ */
+export function verifyAmountProofEnvelope(envelope) {
+  if (!(envelope instanceof Uint8Array)) {
+    throw new Error('verifyAmountProofEnvelope: envelope must be Uint8Array');
+  }
+
+  const { core } = parseProofEnvelope(envelope);
+  const proof = deserializeProof(core);
+  return verifySigmaRangeProof(proof);
 }

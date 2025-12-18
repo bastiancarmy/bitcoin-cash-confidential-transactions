@@ -57,9 +57,13 @@ import {
 } from './derivation.js';
 import { deriveEphemeralKeypair } from './ephemeral.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { generateSigmaRangeProof, serializeProof, computeProofHash } from './zk.js';
-import { getH, toCompressed } from './pedersen.js';
-import { buildProofEnvelope } from './transcript.js';
+import {
+  buildAmountProofEnvelope,
+  generateSigmaRangeProof,
+  serializeProof,
+  computeProofHash,
+  BITS,
+} from './zk.js';
 import {
   makeRpaContextV1FromHex,
   attachRpaContextToPsbtOutput,
@@ -68,6 +72,8 @@ import {
   RpaModeId,
 } from './psbt_rpa.js';
 import { promptFundAddress } from './prompts.js';
+import { demoPoolHashFold } from './pool_hash_fold_demo.js';
+import { POOL_HASH_FOLD_VERSION } from './pool_hash_fold_script.js';
 
 function logSection(title) {
   console.log('\n' + '═'.repeat(70));
@@ -238,7 +244,7 @@ function printPhase1Report({
 /* Basic TX parsing helpers                                                   */
 /* -------------------------------------------------------------------------- */
 
-function parseTx(txHex) {
+function parseRawTx(txHex) {
   const bytes = hexToBytes(txHex);
   let pos = 0;
 
@@ -344,7 +350,7 @@ async function getCovenantUtxoFromTxId(txId, network) {
   const client = await connectElectrum(network);
   try {
     const txHex = await client.request('blockchain.transaction.get', txId);
-    const txDetails = parseTx(txHex);
+    const txDetails = parseRawTx(txHex);
 
     let covenantOutput = txDetails.outputs.find(
       (out) => out.token_data && out.token_data.nft,
@@ -382,49 +388,51 @@ async function getCovenantUtxoFromTxId(txId, network) {
 /* Envelope computation (funding proof)                                      */
 /* -------------------------------------------------------------------------- */
 
-function computeFundingEnvelope(ephemPub33, amount) {
+function computeFundingEnvelope(
+  ephemPub33,
+  amount,
+  tokenCategory32 = null,
+  outIndex = 1,
+  extraCtx = new Uint8Array(0),
+) {
   if (!(ephemPub33 instanceof Uint8Array) || ephemPub33.length !== 33) {
     throw new Error('ephemPub33 must be a 33-byte compressed pubkey');
   }
-  if (typeof amount !== 'number' || amount < 0) {
-    throw new Error('amount must be a non-negative number');
+  if (typeof amount !== 'number' && typeof amount !== 'bigint') {
+    throw new Error('amount must be a non-negative number or bigint');
+  }
+  const amountBig = BigInt(amount);
+  if (amountBig < 0n) {
+    throw new Error('amount must be non-negative');
   }
 
-  const seed = sha256(concat(ephemPub33, uint64le(amount)));
+  // Phase-1 CTv1 spec: seed = sha256(ephemPub33 || uint64le(amount))
+  const seed = sha256(concat(ephemPub33, uint64le(amountBig)));
 
-  // PROOF: C_bytes is set by the generator and must exist before serialization.
-  const proof = generateSigmaRangeProof(amount, seed);
-  if (!proof.C_bytes || proof.C_bytes.length !== 33) {
-    throw new Error('proof.C_bytes missing or invalid before serialization');
-  }
-
-  const coreProofBytes = serializeProof(proof);
-  const H33 = toCompressed(getH());
-  const outIndex = 0;
-  const rangeBits = 64;
-  const assetId32 = null;
-  const extraCtx = new Uint8Array(0);
-
-  const envelope = buildProofEnvelope({
-    protocolTag: 'BCH-CT/Sigma64-v1',
-    rangeBits,
+  const {
+    envelope,
+    proofHash,
+    coreHashBytes,
+    commitmentC33,
+  } = buildAmountProofEnvelope({
+    value: amountBig,
+    zkSeed: seed,
     ephemPub33,
-    H33,
-    assetId32,
+    assetId32: tokenCategory32,
     outIndex,
     extraCtx,
-    coreProofBytes,
   });
 
-  const proofHashBytes = computeProofHash(envelope);
-  const coreHashBytes = computeProofHash(coreProofBytes); // convenient for debugging
+  const proofHashBytes = proofHash;
 
   console.log('--- Funding Envelope Params ---');
   console.log('ephemPub33:', bytesToHex(ephemPub33));
-  console.log('rangeBits:', rangeBits);
+  console.log('rangeBits:', BITS);
   console.log('outIndex:', outIndex);
-  console.log('H33:', bytesToHex(H33));
-  console.log('assetId32:', assetId32);
+  console.log(
+    'assetId32:',
+    tokenCategory32 ? bytesToHex(tokenCategory32) : 'null',
+  );
   console.log('extraCtx.len:', extraCtx.length);
   console.log('coreHash (hash256(coreProofBytes)):', bytesToHex(coreHashBytes));
   console.log('proofHash (hash256(envelope)):', bytesToHex(proofHashBytes));
@@ -433,7 +441,7 @@ function computeFundingEnvelope(ephemPub33, amount) {
     envelope,
     proofHashBytes,
     coreHashBytes,
-    commitment33: proof.C_bytes, // used for token commitment
+    commitment33: commitmentC33, // used for NFT commitment
   };
 }
 
@@ -723,7 +731,12 @@ export async function demoSilentTransfer(options = {}) {
     proofHashBytes,
     coreHashBytes,
     commitment33,
-  } = computeFundingEnvelope(aliceEphemPubBytes, sendAmount);
+  } = computeFundingEnvelope(
+    aliceEphemPubBytes,
+    sendAmount,
+    categoryBytes, // tokenCategory32 / assetId32
+    1,             // outIndex for the covenant output
+  );  
 
   // Create CashToken with commitment from same proof
   const token = createToken(categoryBytes, commitment33);
@@ -1087,6 +1100,20 @@ async function mainCli(argv) {
     console.log('Running fund_schnorr.js (legacy fund helper)...');
     // eslint-disable-next-line global-require
     require('./fund_schnorr.js');
+    return;
+  }
+
+  // New: pool_hash_fold demo shortcut
+  if (argv[2] === 'pool') {
+    const versionArg = argv[3] || 'v0';
+    const version =
+      versionArg === 'v1'   ? POOL_HASH_FOLD_VERSION.V1   :
+      versionArg === 'v1_1' ? POOL_HASH_FOLD_VERSION.V1_1 :
+      POOL_HASH_FOLD_VERSION.V0;
+
+    const { alice } = await getWallets();
+    const res = await demoPoolHashFold(alice, NETWORK, { version });
+    console.log('\nPool hash fold summary:', res);
     return;
   }
 

@@ -124,42 +124,92 @@ export function getBobRedeemScript(bobPubKeyHash) {
 
 /**
  * Prepend a CashTokens token prefix to a locking script.
- * Validates presence and ranges for NFT commitment/capability and amount.
  *
- * NOTE: `token.amount` is validated against 1..2^63-1 but then encoded via Number().
- *       Ensure `amount <= Number.MAX_SAFE_INTEGER` in your flow to avoid precision loss.
+ * Expected `token` shape:
+ * - token.category: Uint8Array(32)             // required
+ * - token.nft (optional):
+ *     - capability: 0 | 1 | 2
+ *                  | 'none' | 'mutable' | 'minting'
+ *     - commitment: Uint8Array (1–40 bytes)
+ * - token.amount (optional): bigint in [1, 2^63 - 1]
+ *
+ * If `token` or `token.category` is missing, this is a no-op and returns `lockingScript`.
+ *
+ * NOTE: `token.amount` is validated as a bigint in the range 1..2^63-1 but
+ *       is encoded via Number() for varInt. Ensure `amount <= Number.MAX_SAFE_INTEGER`
+ *       in your flow to avoid precision loss.
  */
 export function addTokenToScript(token, lockingScript) {
   console.log('Using updated addTokenToScript with nft handling');
+
+  // No token info → leave script unchanged
   if (!token || !token.category) return lockingScript;
+
   if (!(token.category instanceof Uint8Array) || token.category.length !== 32) {
     throw new Error('token.category must be Uint8Array of 32 bytes');
   }
 
-  const prefixParts = [new Uint8Array([0xef])];
+  const prefixParts = [new Uint8Array([0xef])]; // CashTokens prefix marker
   prefixParts.push(token.category);
 
   let bitfield = 0x00;
   const hasNft = !!token.nft;
   const hasAmount = token.amount !== undefined && token.amount > 0n;
-  const capability = hasNft ? token.nft.capability ?? 0 : 0;
-  const commitment = hasNft ? token.nft.commitment : undefined;
-  const hasCommitment = commitment instanceof Uint8Array && commitment.length > 0;
+
+  // Normalize capability to a number 0–2
+  let capability = 0;
+  /** @type {Uint8Array | undefined} */
+  let commitment;
+  let hasCommitment = false;
+
+  if (hasNft) {
+    const rawCap = token.nft.capability ?? 0;
+
+    if (typeof rawCap === 'string') {
+      if (rawCap === 'none') capability = 0;
+      else if (rawCap === 'mutable') capability = 1;
+      else if (rawCap === 'minting') capability = 2;
+      else throw new Error(`Invalid NFT capability string: ${rawCap}`);
+    } else {
+      capability = rawCap;
+    }
+
+    commitment = token.nft.commitment;
+    hasCommitment = commitment instanceof Uint8Array && commitment.length > 0;
+  }
 
   // Spec validations
-  if (!hasNft && !hasAmount)
-    throw new Error('Invalid token: No NFT or amount (empty prefix invalid per spec)');
-  if (hasCommitment && !hasNft)
-    throw new Error('Invalid token: Commitment without NFT (spec violation)');
-  if (hasNft && (capability < 0 || capability > 2))
-    throw new Error('Invalid NFT capability (must be 0-2 per spec)');
-  if (!hasNft && capability !== 0)
-    throw new Error('Invalid: Capability set without NFT (must be 0 per spec)');
-  if (hasCommitment && (commitment.length < 1 || commitment.length > 40))
-    throw new Error('Commitment must be 1-40 bytes per spec');
-  if (hasAmount && (token.amount < 1n || token.amount > 9223372036854775807n))
-    throw new Error('Amount must be 1 to max VM number per spec');
+  if (!hasNft && !hasAmount) {
+    throw new Error(
+      'Invalid token: No NFT or amount (empty prefix invalid per spec)'
+    );
+  }
 
+  if (hasCommitment && !hasNft) {
+    throw new Error(
+      'Invalid token: Commitment without NFT (spec violation)'
+    );
+  }
+
+  if (hasNft && (capability < 0 || capability > 2)) {
+    throw new Error('Invalid NFT capability (must be 0-2 per spec)');
+  }
+
+  if (!hasNft && capability !== 0) {
+    throw new Error(
+      'Invalid: Capability set without NFT (must be 0 per spec)'
+    );
+  }
+
+  if (hasCommitment && (commitment.length < 1 || commitment.length > 40)) {
+    throw new Error('Commitment must be 1-40 bytes per spec');
+  }
+
+  if (hasAmount && (token.amount < 1n || token.amount > 9223372036854775807n)) {
+    throw new Error('Amount must be 1 to max VM number per spec');
+  }
+
+  // Build bitfield
   if (hasCommitment) bitfield |= 0x40;
   if (hasNft) bitfield |= 0x20;
   if (hasAmount) bitfield |= 0x10;
@@ -173,12 +223,13 @@ export function addTokenToScript(token, lockingScript) {
   }
 
   if (hasAmount) {
-    // See NOTE above re: Number()
+    // See NOTE in the JSDoc re: Number()
     prefixParts.push(varInt(Number(token.amount)));
   }
 
   const tokenPrefix = concat(...prefixParts);
   console.log('Token Prefix (hex):', bytesToHex(tokenPrefix));
+
   return concat(tokenPrefix, lockingScript);
 }
 
