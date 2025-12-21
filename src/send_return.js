@@ -36,7 +36,8 @@ import {
   extractPubKeyFromPaycode,
   hexToBytes,
   bchSchnorrSign,
-  bchSchnorrVerify
+  bchSchnorrVerify,
+  normalizeCategory32
 } from './utils.js';
 import { createCovenant } from './covenants.js';
 import {
@@ -483,6 +484,15 @@ export async function buildBobReturnTx(
   // Bob's HASH160(one-time pub) for covenant recreation
   const bobHash20 = _hash160(oneTimePub33);
 
+  const {
+    scriptPubKey: rawPrevScript,
+    value: covenantValue,
+    token_data: initial_token_data,
+  } = await getPrevoutDetails(covenantUtxo.tx_hash, covenantUtxo.tx_pos, network);
+
+  // Reuse the exact serialized on-chain token prefix (if present)
+  const prevTokenPrefix = extractTokenPrefixFromScript(rawPrevScript); // null if none
+
   /* ------------------------------------------------------------------------ */
   /* 2.5) Rebuild ZK envelope and proofHash for covenant anchoring            */
   /* ------------------------------------------------------------------------ */
@@ -497,8 +507,16 @@ export async function buildBobReturnTx(
 
   const rangeBits = 64;
   const H33 = toCompressed(getH());
-  const outIndex = 0;
-  const assetId32 = null;
+
+  // MUST match funding side:
+  const outIndex = Number(covenantUtxo.tx_pos); // MUST match funding side (vout=1)
+  const assetId32 = normalizeCategory32(initial_token_data?.category);
+  if (assetId32 && assetId32.length !== 32) {
+    throw new Error(`token_data.category must be 32 bytes, got ${assetId32.length}`);
+  }
+  
+  console.log('envelope bind outIndex=', outIndex, 'assetId32.len=', assetId32?.length);
+
   const extraCtx = new Uint8Array(0);
 
   const regenEnvelope = buildProofEnvelope({
@@ -512,11 +530,12 @@ export async function buildBobReturnTx(
     coreProofBytes: regenCoreProofBytes,
   });
 
-  const regenProofHash = dhash(regenEnvelope); // Uint8Array(32)
-  console.log(
-    'Rebuilt ZK proofHash for covenant script (hash256(envelope)):',
+  const regenProofHash = dhash(regenEnvelope);
+  console.log('Rebuilt ZK proofHash for covenant script (hash256(envelope)):',
     bytesToHex(regenProofHash),
   );
+  console.log('regenProofHash:', bytesToHex(regenProofHash));
+  console.log('prevTokenPrefix:', prevTokenPrefix ? bytesToHex(prevTokenPrefix.slice(0, 1 + 32)) : '<none>');
 
   /* ------------------------------------------------------------------------ */
   /* 3) Load covenant prevout & verify redeemScript ↔ UTXO P2SH hash          */
@@ -524,14 +543,6 @@ export async function buildBobReturnTx(
   console.log('\n[3C] Loading covenant UTXO and matching its P2SH script:');
   console.log('Spending covenant prevout:', covenantUtxo.tx_hash, covenantUtxo.tx_pos);
 
-  const {
-    scriptPubKey: rawPrevScript,
-    value: covenantValue,
-    token_data: initial_token_data,
-  } = await getPrevoutDetails(covenantUtxo.tx_hash, covenantUtxo.tx_pos, network);
-
-  // Reuse the exact serialized on-chain token prefix (if present)
-  const prevTokenPrefix = extractTokenPrefixFromScript(rawPrevScript); // null if none
   if (prevTokenPrefix) {
     console.log('COVENANT prevTokenPrefix (hex):', bytesToHex(prevTokenPrefix));
   }
@@ -629,7 +640,7 @@ export async function buildBobReturnTx(
   console.log('\n[4B] Fee estimation and change planning:');
   console.log('Dynamic Fee rate:', rate, 'sat/byte');
 
-  const totalInput = covenantUtxo.value + bobUtxo.value;
+  const totalInput = Number(covenantValue) + bobUtxo.value;
 
   // Reuse exact token prefix (if any) on vout0 → Alice
   const aliceP2PKH = getP2PKHScript(aliceDerivedHash160);

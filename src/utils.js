@@ -24,7 +24,17 @@ export function bigIntToBytes(big, len) {
 }
 
 export function hexToBytes(hex) {
-  return Uint8Array.from(hex.match(/.{2}/g).map(b => parseInt(b, 16)));
+  if (hex instanceof Uint8Array) return hex;           // accept bytes (Buffer too)
+  if (Array.isArray(hex)) return Uint8Array.from(hex); // accept number[]
+  if (typeof hex !== 'string') {
+    throw new TypeError(`hexToBytes expected string/Uint8Array/number[], got ${typeof hex}`);
+  }
+
+  const h = hex.startsWith('0x') ? hex.slice(2) : hex;
+  if (h.length % 2 !== 0) throw new Error('hexToBytes: hex length must be even');
+  if (h.length === 0) return new Uint8Array();
+
+  return Uint8Array.from(h.match(/.{2}/g).map(b => parseInt(b, 16)));
 }
 
 export function bytesToHex(bytes) {
@@ -378,4 +388,30 @@ export function ensureEvenYPriv(privBytes) {
     if ((affineConfirm.y & 1n) === 1n) throw new Error('Parity enforcement failed');
   }
   return privBytes;
+}
+
+export function normalizeCategory32(cat) {
+  if (cat == null) return null;
+
+  // Buffer is a Uint8Array subclass, so this covers Buffer too
+  if (cat instanceof Uint8Array) {
+    if (cat.length !== 32) throw new Error(`token category must be 32 bytes, got ${cat.length}`);
+    return cat;
+  }
+
+  // Some parsers return number[]
+  if (Array.isArray(cat)) {
+    const u8 = Uint8Array.from(cat);
+    if (u8.length !== 32) throw new Error(`token category must be 32 bytes, got ${u8.length}`);
+    return u8;
+  }
+
+  if (typeof cat === 'string') {
+    const hex = cat.startsWith('0x') ? cat.slice(2) : cat;
+    const u8 = hexToBytes(hex);
+    if (u8.length !== 32) throw new Error(`token category must be 32 bytes, got ${u8.length}`);
+    return u8;
+  }
+
+  throw new TypeError(`unexpected token_data.category type: ${typeof cat}`);
 }
